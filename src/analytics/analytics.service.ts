@@ -150,12 +150,18 @@ export class AnalyticsService {
 
         const topProducts = await topProductsQuery.getRawMany();
 
+        // Calculate Average Order Value (AOV)
+        const revenue = parseFloat(totalRevenue || '0');
+        const orders = parseInt(totalOrders || '0');
+        const averageOrderValue = orders > 0 ? revenue / orders : 0;
+
         return {
-            totalRevenue: parseFloat(totalRevenue || '0'),
-            totalOrders: parseInt(totalOrders || '0'),
+            totalRevenue: revenue,
+            totalOrders: orders,
+            averageOrderValue: parseFloat(averageOrderValue.toFixed(2)),
             salesOverTime: salesOverTime,
             topProducts: topProducts.map(p => ({
-                id: p.title, // Use title as ID for now since we group by title
+                id: p.title,
                 title: p.title,
                 totalSales: parseFloat(p.totalSales)
             }))

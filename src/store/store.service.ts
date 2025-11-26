@@ -67,6 +67,7 @@ export class StoreService {
             const shopifyOrders = await this.shopifyService.getOrders(store.url, store.accessToken);
             this.logger.log(`Fetched ${shopifyOrders.length} orders from Shopify`);
 
+
             for (const sOrder of shopifyOrders) {
                 const lineItems = sOrder.line_items.map((item: any) => {
                     const lineItem = new LineItem();
@@ -77,29 +78,30 @@ export class StoreService {
                     return lineItem;
                 });
 
-                const order = this.orderRepository.create({
-                    shopifyId: sOrder.id.toString(),
-                    totalPrice: sOrder.total_price,
-                    currency: sOrder.currency,
-                    createdAt: new Date(sOrder.created_at),
-                    processedAt: sOrder.processed_at ? new Date(sOrder.processed_at) : new Date(sOrder.created_at),
-                    store: store,
-                    lineItems: lineItems,
-                });
-
-                // Upsert (save or update)
+                // Check if order exists
                 const existing = await this.orderRepository.findOne({
-                    where: { shopifyId: order.shopifyId },
+                    where: { shopifyId: sOrder.id.toString() },
                     relations: ['lineItems']
                 });
 
                 if (existing) {
-                    await this.orderRepository.update(existing.id, {
-                        totalPrice: order.totalPrice,
-                        currency: order.currency,
-                        processedAt: order.processedAt,
-                    });
+                    // Update existing order and replace line items
+                    existing.totalPrice = sOrder.total_price;
+                    existing.currency = sOrder.currency;
+                    existing.processedAt = sOrder.processed_at ? new Date(sOrder.processed_at) : new Date(sOrder.created_at);
+                    existing.lineItems = lineItems; // Replace with new line items
+                    await this.orderRepository.save(existing); // Cascade will handle line items
                 } else {
+                    // Create new order
+                    const order = this.orderRepository.create({
+                        shopifyId: sOrder.id.toString(),
+                        totalPrice: sOrder.total_price,
+                        currency: sOrder.currency,
+                        createdAt: new Date(sOrder.created_at),
+                        processedAt: sOrder.processed_at ? new Date(sOrder.processed_at) : new Date(sOrder.created_at),
+                        store: store,
+                        lineItems: lineItems,
+                    });
                     await this.orderRepository.save(order);
                 }
             }
