@@ -27,6 +27,12 @@ export class Store {
     @Column({ nullable: true })
     lastSyncAt: Date;
 
+    @Column({ nullable: true })
+    startDate: Date;
+
+    @Column({ nullable: true })
+    endDate: Date;
+
     @CreateDateColumn()
     createdAt: Date;
 

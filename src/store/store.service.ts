@@ -56,6 +56,12 @@ export class StoreService {
         return this.storeRepository.remove(store);
     }
 
+    async update(id: string, updateData: Partial<Store>) {
+        const store = await this.findOne(id);
+        Object.assign(store, updateData);
+        return this.storeRepository.save(store);
+    }
+
     async syncStoreData(store: Store) {
         this.logger.log(`Starting sync for store: ${store.name}`);
 
