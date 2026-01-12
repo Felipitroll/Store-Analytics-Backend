@@ -7,9 +7,10 @@ import { Product } from './entities/product.entity';
 import { SessionMetric } from './entities/session-metric.entity';
 
 import { LineItem } from './entities/line-item.entity';
+import { Store } from '../store/entities/store.entity';
 
 @Module({
-    imports: [TypeOrmModule.forFeature([Order, Product, LineItem, SessionMetric])],
+    imports: [TypeOrmModule.forFeature([Order, Product, LineItem, SessionMetric, Store])],
     controllers: [AnalyticsController],
     providers: [AnalyticsService],
     exports: [AnalyticsService]

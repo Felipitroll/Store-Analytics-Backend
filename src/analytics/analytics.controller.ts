@@ -11,8 +11,9 @@ export class AnalyticsController {
         @Query('startDate') startDate?: string,
         @Query('endDate') endDate?: string,
         @Query('comparisonPeriod') comparisonPeriod?: 'previous_period' | 'last_month' | 'last_year',
+        @Query('benchmarkPeriod') benchmarkPeriod?: 'ref' | 'ref_1' | 'ref_2' | 'ref_3',
     ) {
-        return this.analyticsService.getStoreAnalytics(storeId, startDate, endDate, comparisonPeriod);
+        return this.analyticsService.getStoreAnalytics(storeId, startDate, endDate, comparisonPeriod, benchmarkPeriod);
     }
 
     @Get(':storeId/sessions')

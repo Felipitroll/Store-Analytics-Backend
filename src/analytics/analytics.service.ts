@@ -5,6 +5,7 @@ import { Order } from './entities/order.entity';
 import { Product } from './entities/product.entity';
 import { LineItem } from './entities/line-item.entity';
 import { SessionMetric } from './entities/session-metric.entity';
+import { Store } from '../store/entities/store.entity';
 
 @Injectable()
 export class AnalyticsService {
@@ -15,11 +16,22 @@ export class AnalyticsService {
         private productRepository: Repository<Product>,
         @InjectRepository(SessionMetric)
         private sessionMetricRepository: Repository<SessionMetric>,
+        @InjectRepository(Store)
+        private storeRepository: Repository<Store>,
     ) { }
 
-    async getStoreAnalytics(storeId: string, startDate?: string, endDate?: string, comparisonPeriod?: 'previous_period' | 'last_month' | 'last_year') {
+    async getStoreAnalytics(
+        storeId: string,
+        startDate?: string,
+        endDate?: string,
+        comparisonPeriod?: 'previous_period' | 'last_month' | 'last_year',
+        benchmarkPeriod: 'ref' | 'ref_1' | 'ref_2' | 'ref_3' = 'ref'
+    ) {
         const start = startDate ? new Date(startDate) : new Date(new Date().setDate(new Date().getDate() - 30));
         const end = endDate ? new Date(endDate) : new Date();
+
+        // 0. Get Store baseline
+        const store = await this.storeRepository.findOne({ where: { id: storeId } });
 
         // Helper to calculate comparison range
         const getComparisonRange = () => {
@@ -30,7 +42,7 @@ export class AnalyticsService {
             const duration = end.getTime() - start.getTime();
 
             if (comparisonPeriod === 'previous_period') {
-                compStart.setTime(start.getTime() - duration - (24 * 60 * 60 * 1000)); // Subtract duration + 1 day to avoid overlap
+                compStart.setTime(start.getTime() - duration - (24 * 60 * 60 * 1000));
                 compEnd.setTime(start.getTime() - (24 * 60 * 60 * 1000));
             } else if (comparisonPeriod === 'last_month') {
                 compStart.setMonth(start.getMonth() - 1);
@@ -43,11 +55,31 @@ export class AnalyticsService {
             return { start: compStart, end: compEnd };
         };
 
+        // Helper to calculate benchmark range
+        const getBenchmarkRange = () => {
+            if (!store?.startDate || !store?.endDate) return null;
+
+            const bStart = new Date(store.startDate);
+            const bEnd = new Date(store.endDate);
+
+            let offset = 0;
+            if (benchmarkPeriod === 'ref_1') offset = 1;
+            else if (benchmarkPeriod === 'ref_2') offset = 2;
+            else if (benchmarkPeriod === 'ref_3') offset = 3;
+
+            if (offset > 0) {
+                bStart.setMonth(bStart.getMonth() - offset);
+                bEnd.setMonth(bEnd.getMonth() - offset);
+            }
+
+            return { start: bStart, end: bEnd };
+        };
+
         const comparisonRange = getComparisonRange();
+        const benchmarkRange = getBenchmarkRange();
 
         // Helper for queries
         const getMetrics = async (s: Date, e: Date) => {
-            // 1. Total Revenue and Orders
             const { totalRevenue, totalOrders } = await this.orderRepository
                 .createQueryBuilder('order')
                 .select('SUM(order.totalPrice)', 'totalRevenue')
@@ -56,7 +88,6 @@ export class AnalyticsService {
                 .andWhere('order.processedAt BETWEEN :start AND :end', { start: s, end: e })
                 .getRawOne();
 
-            // 2. Session Metrics
             const sessionMetrics = await this.sessionMetricRepository
                 .createQueryBuilder('metric')
                 .select('SUM(metric.sessions)', 'totalSessions')
@@ -78,9 +109,15 @@ export class AnalyticsService {
         };
 
         const currentMetrics = await getMetrics(start, end);
+
         let comparisonMetrics = null;
         if (comparisonRange) {
             comparisonMetrics = await getMetrics(comparisonRange.start, comparisonRange.end);
+        }
+
+        let benchmarkMetrics = null;
+        if (benchmarkRange) {
+            benchmarkMetrics = await getMetrics(benchmarkRange.start, benchmarkRange.end);
         }
 
         // Helper to calculate % change
@@ -94,11 +131,8 @@ export class AnalyticsService {
         const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 
         let dbInterval = 'month';
-        if (diffDays <= 14) {
-            dbInterval = 'day';
-        } else if (diffDays <= 60) {
-            dbInterval = 'week';
-        }
+        if (diffDays <= 14) dbInterval = 'day';
+        else if (diffDays <= 60) dbInterval = 'week';
 
         const salesResults = await this.orderRepository
             .createQueryBuilder('order')
@@ -180,6 +214,13 @@ export class AnalyticsService {
                 averageOrderValueChange: calculateChange(currentMetrics.aov, comparisonMetrics.aov),
                 totalSessionsChange: calculateChange(currentMetrics.sessions, comparisonMetrics.sessions),
                 conversionRateChange: calculateChange(currentMetrics.cr, comparisonMetrics.cr),
+            } : null,
+            benchmark: benchmarkMetrics ? {
+                totalRevenueChange: calculateChange(currentMetrics.revenue, benchmarkMetrics.revenue),
+                totalOrdersChange: calculateChange(currentMetrics.orders, benchmarkMetrics.orders),
+                averageOrderValueChange: calculateChange(currentMetrics.aov, benchmarkMetrics.aov),
+                totalSessionsChange: calculateChange(currentMetrics.sessions, benchmarkMetrics.sessions),
+                conversionRateChange: calculateChange(currentMetrics.cr, benchmarkMetrics.cr),
             } : null,
             salesOverTime: salesOverTime,
             topProducts: topProducts.map(p => ({
