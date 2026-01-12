@@ -83,19 +83,27 @@ export class StoreService {
 
             for (const sOrder of shopifyOrders) {
                 try {
+                    // Check if order exists
+                    const existing = await this.orderRepository.findOne({
+                        where: { shopifyId: sOrder.id.toString() },
+                        relations: ['lineItems']
+                    });
+
                     const lineItems = sOrder.line_items.map((item: any) => {
                         const lineItem = new LineItem();
                         lineItem.shopifyId = item.id.toString();
                         lineItem.title = item.title;
                         lineItem.quantity = item.quantity;
                         lineItem.price = parseFloat(item.price);
-                        return lineItem;
-                    });
 
-                    // Check if order exists
-                    const existing = await this.orderRepository.findOne({
-                        where: { shopifyId: sOrder.id.toString() },
-                        relations: ['lineItems']
+                        // If order exists, try to find the existing line item to preserve its ID
+                        if (existing && existing.lineItems) {
+                            const existingItem = existing.lineItems.find(li => li.shopifyId === lineItem.shopifyId);
+                            if (existingItem) {
+                                lineItem.id = existingItem.id;
+                            }
+                        }
+                        return lineItem;
                     });
 
                     if (existing) {
