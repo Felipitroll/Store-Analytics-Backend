@@ -10,8 +10,9 @@ export class AnalyticsController {
         @Param('storeId') storeId: string,
         @Query('startDate') startDate?: string,
         @Query('endDate') endDate?: string,
+        @Query('comparisonPeriod') comparisonPeriod?: 'previous_period' | 'last_month' | 'last_year',
     ) {
-        return this.analyticsService.getStoreAnalytics(storeId, startDate, endDate);
+        return this.analyticsService.getStoreAnalytics(storeId, startDate, endDate, comparisonPeriod);
     }
 
     @Get(':storeId/sessions')
