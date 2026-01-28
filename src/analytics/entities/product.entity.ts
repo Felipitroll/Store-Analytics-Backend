@@ -12,7 +12,19 @@ export class Product {
     @Column()
     title: string;
 
-    @Column('int', { default: 0 })
+    @Column({ nullable: true })
+    handle: string;
+
+    @Column({ nullable: true })
+    image: string;
+
+    @Column({ nullable: true })
+    status: string;
+
+    @Column('text', { array: true, default: '{}' })
+    tags: string[];
+
+    @Column('decimal', { precision: 10, scale: 2, default: 0 })
     totalSales: number;
 
     @ManyToOne(() => Store, (store) => store.products)

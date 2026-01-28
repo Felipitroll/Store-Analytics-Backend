@@ -120,7 +120,36 @@ export class StoreService {
                 this.logger.log(`Hard/Initial Sync detected. Syncing from ${sinceStr} (Ref Start - 3m) to ${todayStr}`);
             }
 
-            // 2. Sync Product Metrics (Top Products) - New Logic
+            // 2. Sync Standard Products (Metadata)
+            this.logger.log(`Starting standard product sync for store: ${store.name}`);
+            try {
+                const products = await this.shopifyService.getProducts(store.url, store.accessToken);
+                for (const p of products) {
+                    let product = await this.productRepository.findOne({
+                        where: { shopifyId: p.id.toString(), store: { id: store.id } }
+                    });
+
+                    if (!product) {
+                        product = this.productRepository.create({
+                            shopifyId: p.id.toString(),
+                            store: store
+                        });
+                    }
+
+                    product.title = p.title;
+                    product.handle = p.handle;
+                    product.image = p.image?.src || null;
+                    product.status = p.status;
+                    product.tags = p.tags ? p.tags.split(',').map((t: string) => t.trim()) : [];
+
+                    await this.productRepository.save(product);
+                }
+                this.logger.log(`Synced ${products.length} products for ${store.name}`);
+            } catch (err) {
+                this.logger.warn(`Failed to sync standard products: ${err.message}`);
+            }
+
+            // 3. Sync Product Metrics (Top Products) - ShopifyQL Logic
             this.logger.log(`Starting product metrics sync for store: ${store.name}`);
             try {
                 // Use same time range as daily metrics
@@ -143,7 +172,9 @@ export class StoreService {
                         where: {
                             store: { id: store.id },
                             date: pData.date,
-                            productTitle: pData.productTitle
+                            productTitle: pData.productTitle,
+                            // If we have productId, use it for matching too if available
+                            ...(pData.productId ? { productId: pData.productId } : {})
                         }
                     }) as any;
 
@@ -151,13 +182,15 @@ export class StoreService {
                         pMetric = productMetricRepo.create({
                             store: store,
                             date: pData.date,
-                            productTitle: pData.productTitle
+                            productTitle: pData.productTitle,
+                            productId: pData.productId
                         });
                     }
 
                     pMetric.totalSales = pData.totalSales;
                     pMetric.netSales = pData.netSales;
                     pMetric.netItemsSold = pData.netItemsSold;
+                    pMetric.productId = pData.productId;
 
                     await productMetricRepo.save(pMetric);
                 }

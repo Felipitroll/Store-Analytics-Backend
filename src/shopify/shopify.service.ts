@@ -127,7 +127,7 @@ export class ShopifyService {
 
     async getProductAnalytics(storeUrl: string, accessToken: string, since: string, until: string) {
         // ShopifyQL query
-        const shopifyQLQuery = `FROM sales SHOW day, product_title, total_sales, net_sales, net_items_sold GROUP BY day, product_title SINCE ${since} UNTIL ${until} ORDER BY day ASC`;
+        const shopifyQLQuery = `FROM sales SHOW day, product_title, product_id, total_sales, net_sales, net_items_sold GROUP BY day, product_id, product_title SINCE ${since} UNTIL ${until} ORDER BY day ASC`;
 
         const query = `
             query getProductAnalytics {
@@ -166,18 +166,18 @@ export class ShopifyService {
 
             this.logger.log(`Fetched ${tableData.rows.length} product rows from ShopifyQL`);
 
-            // Parse rows. Expected order based on query:
-            // day, product_title, total_sales, net_sales, net_items_sold
-            // (Group keys usually come first)
+            // Parse rows. Expected order:
+            // day, product_title, product_id, total_sales, net_sales, net_items_sold
 
             return tableData.rows.map((row: any) => {
                 const isArray = Array.isArray(row);
                 return {
                     date: isArray ? row[0] : row.day,
                     productTitle: isArray ? row[1] : row.product_title,
-                    totalSales: parseFloat((isArray ? row[2] : row.total_sales) || '0'),
-                    netSales: parseFloat((isArray ? row[3] : row.net_sales) || '0'),
-                    netItemsSold: parseInt((isArray ? row[4] : row.net_items_sold) || '0'),
+                    productId: isArray ? row[2] : row.product_id,
+                    totalSales: parseFloat((isArray ? row[3] : row.total_sales) || '0'),
+                    netSales: parseFloat((isArray ? row[4] : row.net_sales) || '0'),
+                    netItemsSold: parseInt((isArray ? row[5] : row.net_items_sold) || '0'),
                 };
             });
 

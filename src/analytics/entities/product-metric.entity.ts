@@ -13,6 +13,9 @@ export class ProductMetric {
     @Column()
     productTitle: string;
 
+    @Column({ nullable: true })
+    productId: string;
+
     @Column('decimal', { precision: 10, scale: 2, default: 0 })
     totalSales: number;
 

@@ -198,6 +198,7 @@ export class AnalyticsService {
             .addSelect('SUM(pm.netItemsSold)', 'totalQuantity')
             .addSelect('SUM(pm.totalSales)', 'totalSales')
             .where('pm.storeId = :storeId', { storeId })
+            .andWhere('pm.totalSales > 0')
             .andWhere('pm.date BETWEEN :start AND :end', {
                 start: start.toISOString().split('T')[0],
                 end: end.toISOString().split('T')[0]
