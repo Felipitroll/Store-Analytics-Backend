@@ -24,21 +24,32 @@ export class StoreService {
         private shopifyService: ShopifyService,
     ) { }
 
-    async create(url: string, accessToken: string, name: string, tags: string[] = []) {
+    async create(url: string, accessToken: string, name: string, tags: string[] = [], startDate?: string, endDate?: string) {
         const existing = await this.storeRepository.findOne({ where: { url } });
         if (existing) {
             // Update tags if provided
             if (tags.length > 0) {
                 existing.tags = tags;
-                await this.storeRepository.save(existing);
             }
+            if (startDate) existing.startDate = new Date(startDate);
+            if (endDate) existing.endDate = new Date(endDate);
+
+            await this.storeRepository.save(existing);
+
             // Trigger sync for existing store to allow retries
             this.syncStoreData(existing).catch(err =>
                 this.logger.error(`Re-sync failed for store ${url}`, err.stack)
             );
             return existing;
         }
-        const store = this.storeRepository.create({ url, accessToken, name, tags });
+        const store = this.storeRepository.create({
+            url,
+            accessToken,
+            name,
+            tags,
+            startDate: startDate ? new Date(startDate) : undefined,
+            endDate: endDate ? new Date(endDate) : undefined
+        });
         const savedStore = await this.storeRepository.save(store);
 
         // Trigger initial sync asynchronously
@@ -77,131 +88,136 @@ export class StoreService {
         await this.storeRepository.update(store.id, { syncStatus: 'SYNCING' });
 
         try {
-            // 1. Sync Orders
-            const shopifyOrders = await this.shopifyService.getOrders(store.url, store.accessToken);
-            this.logger.log(`Fetched ${shopifyOrders.length} orders from Shopify`);
+            // 1. Determine Sync Range
+            const today = new Date();
+            const todayStr = today.toISOString().split('T')[0];
+            let sinceStr = '';
 
-            for (const sOrder of shopifyOrders) {
-                try {
-                    // Check if order exists
-                    const existing = await this.orderRepository.findOne({
-                        where: { shopifyId: sOrder.id.toString() },
-                        relations: ['lineItems']
-                    });
+            // Check if we have data to determine Soft Vs Hard sync
+            const lastMetric = await this.storeRepository.manager.getRepository('DailyMetric').findOne({
+                where: { store: { id: store.id } },
+                order: { date: 'DESC' }
+            });
 
-                    const lineItems = sOrder.line_items.map((item: any) => {
-                        const lineItem = new LineItem();
-                        lineItem.shopifyId = item.id.toString();
-                        lineItem.title = item.title;
-                        lineItem.quantity = item.quantity;
-                        lineItem.price = parseFloat(item.price);
+            if (lastMetric && (lastMetric as any).date) {
+                // SOFT SYNC: Start from last metric date
+                sinceStr = (lastMetric as any).date;
+                this.logger.log(`Soft Sync detected. Syncing from ${sinceStr} to ${todayStr}`);
+            } else {
+                // HARD SYNC: Reference Period Start - 3 Months
+                let anchorDate = store.startDate ? new Date(store.startDate) : new Date();
 
-                        // If order exists, try to find the existing line item to preserve its ID
-                        if (existing && existing.lineItems) {
-                            const existingItem = existing.lineItems.find(li => li.shopifyId === lineItem.shopifyId);
-                            if (existingItem) {
-                                lineItem.id = existingItem.id;
-                            }
-                        }
-                        return lineItem;
-                    });
-
-                    if (existing) {
-                        // Update existing order
-                        existing.totalPrice = sOrder.total_price;
-                        existing.currency = sOrder.currency;
-                        existing.processedAt = sOrder.processed_at ? new Date(sOrder.processed_at) : new Date(sOrder.created_at);
-                        existing.lineItems = lineItems;
-                        await this.orderRepository.save(existing);
-                    } else {
-                        // Create new order
-                        const order = this.orderRepository.create({
-                            shopifyId: sOrder.id.toString(),
-                            totalPrice: sOrder.total_price,
-                            currency: sOrder.currency,
-                            createdAt: new Date(sOrder.created_at),
-                            processedAt: sOrder.processed_at ? new Date(sOrder.processed_at) : new Date(sOrder.created_at),
-                            store: store,
-                            lineItems: lineItems,
-                        });
-                        await this.orderRepository.save(order);
-                    }
-                } catch (err) {
-                    this.logger.warn(`Failed to sync order ${sOrder.id}: ${err.message}`);
+                // If anchor date is in future, use today
+                if (anchorDate > today) {
+                    anchorDate = today;
                 }
+
+                // Subtract 3 months
+                const sinceDate = new Date(anchorDate);
+                sinceDate.setMonth(sinceDate.getMonth() - 3);
+
+                sinceStr = sinceDate.toISOString().split('T')[0];
+                this.logger.log(`Hard/Initial Sync detected. Syncing from ${sinceStr} (Ref Start - 3m) to ${todayStr}`);
             }
 
-            // 2. Sync Products
-            const shopifyProducts = await this.shopifyService.getProducts(store.url, store.accessToken);
-            this.logger.log(`Fetched ${shopifyProducts.length} products from Shopify`);
-
-            for (const sProduct of shopifyProducts) {
-                try {
-                    const product = this.productRepository.create({
-                        shopifyId: sProduct.id.toString(),
-                        title: sProduct.title,
-                        store: store,
-                    });
-
-                    const existing = await this.productRepository.findOne({ where: { shopifyId: product.shopifyId } });
-                    if (existing) {
-                        await this.productRepository.update(existing.id, product);
-                    } else {
-                        await this.productRepository.save(product);
-                    }
-                } catch (err) {
-                    this.logger.warn(`Failed to sync product ${sProduct.id}: ${err.message}`);
-                }
-            }
-
-            // 3. Sync Session Metrics (historical data)
-            this.logger.log(`Starting session metrics sync for store: ${store.name}`);
-
-            // Calculate date range: from store creation (or 1 year ago) to today
-            const endDate = new Date();
-            const startDate = store.createdAt ? new Date(store.createdAt) : new Date(endDate.getTime() - 365 * 24 * 60 * 60 * 1000);
-
-            // Format dates for Shopify API (YYYY-MM-DD)
-            const formatDate = (date: Date) => date.toISOString().split('T')[0];
-            const startDateStr = formatDate(startDate);
-            const endDateStr = formatDate(endDate);
-
-            this.logger.log(`Fetching session metrics from ${startDateStr} to ${endDateStr}`);
-
+            // 2. Sync Product Metrics (Top Products) - New Logic
+            this.logger.log(`Starting product metrics sync for store: ${store.name}`);
             try {
-                const sessionData = await this.shopifyService.getSessionMetrics(
+                // Use same time range as daily metrics
+                const productAnalytics = await this.shopifyService.getProductAnalytics(
                     store.url,
                     store.accessToken,
-                    startDateStr,
-                    endDateStr
+                    sinceStr,
+                    todayStr
                 );
 
-                this.logger.log(`Fetched ${sessionData.length} session metric records from Shopify`);
+                this.logger.log(`Fetched ${productAnalytics.length} product metric records`);
 
-                // AGGRESSIVE CLEANUP: Delete all existing metrics for this store to avoid conflicts
-                this.logger.log(`Cleaning up existing session metrics...`);
-                await this.sessionMetricRepository.createQueryBuilder()
-                    .delete()
-                    .where("storeId = :storeId", { storeId: store.id })
-                    .execute();
+                const productMetricRepo = this.storeRepository.manager.getRepository('ProductMetric');
 
-                this.logger.log(`Inserting ${sessionData.length} new session metrics...`);
+                // We can either update or insert. Since we want history, we should upsert based on date+productTitle.
+                // Note: Ideally we would use a unique constraint on [store, date, productTitle].
 
-                // Save one by one and IGNORE ALL ERRORS to ensure completion
-                for (const data of sessionData) {
-                    const metric = this.sessionMetricRepository.create({
-                        date: (data as any).date,
-                        sessions: (data as any).sessions,
-                        conversionRate: (data as any).conversionRate ?? undefined,
-                        store: store,
-                    });
-                    await this.sessionMetricRepository.save(metric);
+                for (const pData of productAnalytics) {
+                    let pMetric = await productMetricRepo.findOne({
+                        where: {
+                            store: { id: store.id },
+                            date: pData.date,
+                            productTitle: pData.productTitle
+                        }
+                    }) as any;
+
+                    if (!pMetric) {
+                        pMetric = productMetricRepo.create({
+                            store: store,
+                            date: pData.date,
+                            productTitle: pData.productTitle
+                        });
+                    }
+
+                    pMetric.totalSales = pData.totalSales;
+                    pMetric.netSales = pData.netSales;
+                    pMetric.netItemsSold = pData.netItemsSold;
+
+                    await productMetricRepo.save(pMetric);
+                }
+                this.logger.log(`Successfully synced product metrics`);
+
+            } catch (err) {
+                this.logger.warn(`Failed to sync product metrics: ${err.message}`);
+                // We don't want to fail the whole sync if product metrics fail, just log it.
+            }
+
+            // 3. Sync Daily Metrics (New Architecture)
+            this.logger.log(`Starting daily metrics sync for store: ${store.name}`);
+
+
+
+            try {
+                const analyticsData = await this.shopifyService.getDailyAnalytics(
+                    store.url,
+                    store.accessToken,
+                    sinceStr,
+                    todayStr
+                );
+
+                this.logger.log(`Fetched ${analyticsData.length} daily records from Shopify`);
+
+                // Insert/Update metrics
+                const dailyMetricRepo = this.storeRepository.manager.getRepository('DailyMetric');
+
+                for (const data of analyticsData) {
+                    // Check if exists
+                    let metric = await dailyMetricRepo.findOne({
+                        where: {
+                            store: { id: store.id },
+                            date: data.date
+                        }
+                    }) as any;
+
+                    if (!metric) {
+                        metric = dailyMetricRepo.create({
+                            date: data.date,
+                            store: store
+                        });
+                    }
+
+                    // Update fields
+                    metric.totalRevenue = data.totalSales;
+                    metric.totalOrders = data.orders;
+                    metric.averageOrderValue = data.averageOrderValue || 0;
+                    metric.conversionRate = data.conversionRate || 0;
+                    metric.sessions = data.sessions || 0;
+                    metric.visits = data.sessions || 0; // Keeping visits mapped to sessions for potential legacy compat
+
+                    await dailyMetricRepo.save(metric);
                 }
 
-                this.logger.log(`Successfully synced ${sessionData.length} session metrics`);
+                this.logger.log(`Successfully synced daily metrics`);
+
             } catch (error) {
-                this.logger.error(`Failed to sync session metrics for store ${store.name}`, error.message);
-                // Don't fail the entire sync if session metrics fail
+                this.logger.error(`Failed to sync daily metrics for store ${store.name}`, error.message);
+                throw error;
             }
 
             // Update status to COMPLETED
@@ -214,7 +230,7 @@ export class StoreService {
         } catch (error: any) {
             this.logger.error(`Sync failed for store ${store.name}`, error.stack);
             await this.storeRepository.update(store.id, { syncStatus: 'FAILED' });
-            throw error; // Re-throw to let the controller know it failed
+            throw error;
         }
     }
 }

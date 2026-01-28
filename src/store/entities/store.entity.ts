@@ -3,6 +3,7 @@ import { Order } from '../../analytics/entities/order.entity';
 import { Product } from '../../analytics/entities/product.entity';
 import { DailyMetric } from '../../analytics/entities/daily-metric.entity';
 import { SessionMetric } from '../../analytics/entities/session-metric.entity';
+import { ProductMetric } from '../../analytics/entities/product-metric.entity';
 
 @Entity()
 export class Store {
@@ -48,6 +49,9 @@ export class Store {
 
     @OneToMany(() => SessionMetric, (metric) => metric.store)
     sessionMetrics: SessionMetric[];
+
+    @OneToMany(() => ProductMetric, (metric) => metric.store)
+    productMetrics: ProductMetric[];
 
     @Column('text', { array: true, default: '{}' })
     tags: string[];

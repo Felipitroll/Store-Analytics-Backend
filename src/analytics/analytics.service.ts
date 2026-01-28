@@ -4,6 +4,8 @@ import { Repository } from 'typeorm';
 import { Order } from './entities/order.entity';
 import { Product } from './entities/product.entity';
 import { LineItem } from './entities/line-item.entity';
+import { DailyMetric } from './entities/daily-metric.entity';
+import { ProductMetric } from './entities/product-metric.entity';
 import { SessionMetric } from './entities/session-metric.entity';
 import { Store } from '../store/entities/store.entity';
 
@@ -16,6 +18,10 @@ export class AnalyticsService {
         private productRepository: Repository<Product>,
         @InjectRepository(SessionMetric)
         private sessionMetricRepository: Repository<SessionMetric>,
+        @InjectRepository(DailyMetric)
+        private dailyMetricRepository: Repository<DailyMetric>,
+        @InjectRepository(ProductMetric)
+        private productMetricRepository: Repository<ProductMetric>,
         @InjectRepository(Store)
         private storeRepository: Repository<Store>,
     ) { }
@@ -80,17 +86,11 @@ export class AnalyticsService {
 
         // Helper for queries
         const getMetrics = async (s: Date, e: Date) => {
-            const { totalRevenue, totalOrders } = await this.orderRepository
-                .createQueryBuilder('order')
-                .select('SUM(order.totalPrice)', 'totalRevenue')
-                .addSelect('COUNT(order.id)', 'totalOrders')
-                .where('order.storeId = :storeId', { storeId })
-                .andWhere('order.processedAt BETWEEN :start AND :end', { start: s, end: e })
-                .getRawOne();
-
-            const sessionMetrics = await this.sessionMetricRepository
+            const metrics = await this.dailyMetricRepository
                 .createQueryBuilder('metric')
-                .select('SUM(metric.sessions)', 'totalSessions')
+                .select('SUM(metric.totalRevenue)', 'totalRevenue')
+                .addSelect('SUM(metric.totalOrders)', 'totalOrders')
+                .addSelect('SUM(metric.sessions)', 'totalSessions')
                 .addSelect('AVG(metric.conversionRate)', 'avgCR')
                 .where('metric.storeId = :storeId', { storeId })
                 .andWhere('metric.date BETWEEN :start AND :end', {
@@ -99,11 +99,11 @@ export class AnalyticsService {
                 })
                 .getRawOne();
 
-            const revenue = parseFloat(totalRevenue || '0');
-            const orders = parseInt(totalOrders || '0');
+            const revenue = parseFloat(metrics.totalRevenue || '0');
+            const orders = parseInt(metrics.totalOrders || '0');
             const aov = orders > 0 ? revenue / orders : 0;
-            const sessions = parseInt(sessionMetrics.totalSessions || '0');
-            const cr = parseFloat(sessionMetrics.avgCR || '0');
+            const sessions = parseInt(metrics.totalSessions || '0');
+            const cr = parseFloat(metrics.avgCR || '0');
 
             return { revenue, orders, aov, sessions, cr };
         };
@@ -134,14 +134,17 @@ export class AnalyticsService {
         if (diffDays <= 14) dbInterval = 'day';
         else if (diffDays <= 60) dbInterval = 'week';
 
-        const salesResults = await this.orderRepository
-            .createQueryBuilder('order')
-            .select(`DATE_TRUNC('${dbInterval}', order.processedAt)`, 'date')
-            .addSelect('SUM(order.totalPrice)', 'value')
-            .where('order.storeId = :storeId', { storeId })
-            .andWhere('order.processedAt BETWEEN :start AND :end', { start, end })
-            .groupBy(`DATE_TRUNC('${dbInterval}', order.processedAt)`)
-            .orderBy(`DATE_TRUNC('${dbInterval}', order.processedAt)`, 'ASC')
+        const salesResults = await this.dailyMetricRepository
+            .createQueryBuilder('metric')
+            .select(`DATE_TRUNC('${dbInterval}', metric.date::date)`, 'date')
+            .addSelect('SUM(metric.totalRevenue)', 'value')
+            .where('metric.storeId = :storeId', { storeId })
+            .andWhere('metric.date BETWEEN :start AND :end', {
+                start: start.toISOString().split('T')[0],
+                end: end.toISOString().split('T')[0]
+            })
+            .groupBy(`DATE_TRUNC('${dbInterval}', metric.date::date)`)
+            .orderBy(`DATE_TRUNC('${dbInterval}', metric.date::date)`, 'ASC')
             .getRawMany();
 
         // Fill gaps
@@ -188,16 +191,18 @@ export class AnalyticsService {
             else currentDate.setMonth(currentDate.getMonth() + 1);
         }
 
-        // 3. Top Products
-        const topProducts = await this.orderRepository.manager
-            .createQueryBuilder(LineItem, 'lineItem')
-            .select('lineItem.title', 'title')
-            .addSelect('SUM(lineItem.quantity)', 'totalQuantity')
-            .addSelect('SUM(lineItem.quantity * lineItem.price)', 'totalSales')
-            .innerJoin('lineItem.order', 'order')
-            .where('order.storeId = :storeId', { storeId })
-            .andWhere('order.processedAt BETWEEN :start AND :end', { start, end })
-            .groupBy('lineItem.title')
+        // 3. Top Products (from ProductMetric)
+        const topProducts = await this.productMetricRepository
+            .createQueryBuilder('pm')
+            .select('pm.productTitle', 'title')
+            .addSelect('SUM(pm.netItemsSold)', 'totalQuantity')
+            .addSelect('SUM(pm.totalSales)', 'totalSales')
+            .where('pm.storeId = :storeId', { storeId })
+            .andWhere('pm.date BETWEEN :start AND :end', {
+                start: start.toISOString().split('T')[0],
+                end: end.toISOString().split('T')[0]
+            })
+            .groupBy('pm.productTitle')
             .orderBy('"totalSales"', 'DESC')
             .limit(5)
             .getRawMany();

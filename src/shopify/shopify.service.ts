@@ -24,15 +24,16 @@ export class ShopifyService {
 
     private async executeGraphQL(storeUrl: string, accessToken: string, query: string): Promise<any> {
         const baseUrl = this.formatStoreUrl(storeUrl);
-        // Use 2024-01 version to match REST API and ensure compatibility
-        const url = `${baseUrl}/admin/api/2024-01/graphql.json`;
+        // Use 2026-01 version to match REST API and ensure compatibility
+        const url = `${baseUrl}/admin/api/2026-01/graphql.json`;
 
         try {
             const { data } = await firstValueFrom(
                 this.httpService.post(url, { query }, {
                     headers: {
                         'X-Shopify-Access-Token': accessToken,
-                        'Content-Type': 'application/json',
+                        'Content-Type': 'application/json; charset=utf-8',
+                        'Accept': 'application/json',
                     },
                 }),
             );
@@ -57,12 +58,12 @@ export class ShopifyService {
         }
     }
 
-    async getSessionMetrics(storeUrl: string, accessToken: string, startDate: string, endDate: string) {
-        // ShopifyQL query - note: we need to be careful with the date format
-        const shopifyQLQuery = `FROM sessions SHOW conversion_rate, sessions GROUP BY day SINCE '${startDate}' UNTIL '${endDate}' ORDER BY day ASC`;
-        console.log('shopifyQLQuery', shopifyQLQuery);
+    async getDailyAnalytics(storeUrl: string, accessToken: string, since: string, until: string) {
+        // ShopifyQL query
+        const shopifyQLQuery = `FROM sales, sessions SHOW day, total_sales, orders, average_order_value, conversion_rate, sessions GROUP BY day SINCE ${since} UNTIL ${until} ORDER BY day ASC`;
+
         const query = `
-            query getSessionMetrics {
+            query getDailyAnalytics {
                 shopifyqlQuery(
                     query: """${shopifyQLQuery}"""
                 ) {
@@ -73,14 +74,7 @@ export class ShopifyService {
                         }
                         rows
                     }
-                    parseErrors {
-                        code
-                        message
-                        range {
-                            start { line character }
-                            end { line character }
-                        }
-                    }
+                    parseErrors
                 }
             }
         `;
@@ -93,50 +87,117 @@ export class ShopifyService {
             if (result.shopifyqlQuery?.parseErrors && result.shopifyqlQuery.parseErrors.length > 0) {
                 const errors = result.shopifyqlQuery.parseErrors;
                 this.logger.error('ShopifyQL parse errors:', JSON.stringify(errors));
-                throw new Error(`ShopifyQL Error: ${errors[0].message}`);
+                const errorDetail = typeof errors[0] === 'string' ? errors[0] : (errors[0].message || JSON.stringify(errors[0]));
+                throw new Error(`ShopifyQL Error: ${errorDetail}`);
             }
 
             const tableData = result.shopifyqlQuery?.tableData;
             if (!tableData || !tableData.rows) {
-                this.logger.warn('No session data returned from ShopifyQL');
+                this.logger.warn('No analytics data returned from ShopifyQL');
                 return [];
             }
 
             this.logger.log(`Fetched ${tableData.rows.length} rows from ShopifyQL`);
 
-            // Parse the rows - format: [date, conversion_rate, sessions]
-            const parsedData = tableData.rows.map((row: any[]) => ({
-                date: row[0], // day
-                conversionRate: row[1] !== null ? parseFloat(row[1]) : null,
-                sessions: row[2] !== null ? parseInt(row[2]) : 0,
-            }));
+            // Parse the rows
+            // Expected columns from query: total_sales, orders, average_order_value, conversion_rate, sessions, day
+            // Note: "day" is usually the grouping key, so it might be first or last depending on ShopifyQL implementation details.
+            // Usually GROUP BY columns appear first in result rows, OR the order matches SHOW + GROUP BY.
+            // Let's verify column order or map by index dynamically if possible, but for now we assume the order returned matches SHOW unless GROUP BY key is implicit.
+            // Actually, ShopifyQL returns GROUP BY keys first.
+            // So: day, total_sales, orders, average_order_value, conversion_rate, sessions
 
-            // Deduplicate by date (in case Shopify returns duplicates)
-            const uniqueData = Array.from(
-                new Map(parsedData.map((item: { date: string; conversionRate: number | null; sessions: number }) => [item.date, item])).values()
-            );
+            return tableData.rows.map((row: any) => {
+                const isArray = Array.isArray(row);
+                return {
+                    date: isArray ? row[0] : row.day,
+                    totalSales: parseFloat((isArray ? row[1] : row.total_sales) || '0'),
+                    orders: parseInt((isArray ? row[2] : row.orders) || '0'),
+                    averageOrderValue: parseFloat((isArray ? row[3] : row.average_order_value) || '0'),
+                    conversionRate: parseFloat((isArray ? row[4] : row.conversion_rate) || '0'),
+                    sessions: parseInt((isArray ? row[5] : row.sessions) || '0'),
+                };
+            });
 
-            if (uniqueData.length !== parsedData.length) {
-                this.logger.warn(`Removed ${parsedData.length - uniqueData.length} duplicate date entries from Shopify data`);
+        } catch (error) {
+            this.logger.error(`Failed to fetch daily analytics`, error.message);
+            throw error;
+        }
+    }
+
+    async getProductAnalytics(storeUrl: string, accessToken: string, since: string, until: string) {
+        // ShopifyQL query
+        const shopifyQLQuery = `FROM sales SHOW day, product_title, total_sales, net_sales, net_items_sold GROUP BY day, product_title SINCE ${since} UNTIL ${until} ORDER BY day ASC`;
+
+        const query = `
+            query getProductAnalytics {
+                shopifyqlQuery(
+                    query: """${shopifyQLQuery}"""
+                ) {
+                    tableData {
+                        columns {
+                            name
+                            dataType
+                        }
+                        rows
+                    }
+                    parseErrors
+                }
+            }
+        `;
+
+        this.logger.log(`ShopifyQL Product Query: ${shopifyQLQuery}`);
+
+        try {
+            const result = await this.executeGraphQL(storeUrl, accessToken, query);
+
+            if (result.shopifyqlQuery?.parseErrors && result.shopifyqlQuery.parseErrors.length > 0) {
+                const errors = result.shopifyqlQuery.parseErrors;
+                this.logger.error('ShopifyQL parse errors:', JSON.stringify(errors));
+                const errorDetail = typeof errors[0] === 'string' ? errors[0] : (errors[0].message || JSON.stringify(errors[0]));
+                throw new Error(`ShopifyQL Error: ${errorDetail}`);
             }
 
-            return uniqueData;
+            const tableData = result.shopifyqlQuery?.tableData;
+            if (!tableData || !tableData.rows) {
+                this.logger.warn('No product analytics data returned from ShopifyQL');
+                return [];
+            }
+
+            this.logger.log(`Fetched ${tableData.rows.length} product rows from ShopifyQL`);
+
+            // Parse rows. Expected order based on query:
+            // day, product_title, total_sales, net_sales, net_items_sold
+            // (Group keys usually come first)
+
+            return tableData.rows.map((row: any) => {
+                const isArray = Array.isArray(row);
+                return {
+                    date: isArray ? row[0] : row.day,
+                    productTitle: isArray ? row[1] : row.product_title,
+                    totalSales: parseFloat((isArray ? row[2] : row.total_sales) || '0'),
+                    netSales: parseFloat((isArray ? row[3] : row.net_sales) || '0'),
+                    netItemsSold: parseInt((isArray ? row[4] : row.net_items_sold) || '0'),
+                };
+            });
+
         } catch (error) {
-            this.logger.error(`Failed to fetch session metrics`, error.message);
+            this.logger.error(`Failed to fetch product analytics`, error.message);
             throw error;
         }
     }
 
     async getOrders(storeUrl: string, accessToken: string) {
         const baseUrl = this.formatStoreUrl(storeUrl);
-        const url = `${baseUrl}/admin/api/2024-01/orders.json?status=any&limit=250`;
+        const url = `${baseUrl}/admin/api/2026-01/orders.json?status=any&limit=250`;
 
         try {
             const { data } = await firstValueFrom(
                 this.httpService.get(url, {
                     headers: {
                         'X-Shopify-Access-Token': accessToken,
-                        'Content-Type': 'application/json',
+                        'Content-Type': 'application/json; charset=utf-8',
+                        'Accept': 'application/json',
                     },
                 }),
             );
@@ -149,14 +210,15 @@ export class ShopifyService {
 
     async getProducts(storeUrl: string, accessToken: string) {
         const baseUrl = this.formatStoreUrl(storeUrl);
-        const url = `${baseUrl}/admin/api/2024-01/products.json?limit=250`;
+        const url = `${baseUrl}/admin/api/2026-01/products.json?limit=250`;
 
         try {
             const { data } = await firstValueFrom(
                 this.httpService.get(url, {
                     headers: {
                         'X-Shopify-Access-Token': accessToken,
-                        'Content-Type': 'application/json',
+                        'Content-Type': 'application/json; charset=utf-8',
+                        'Accept': 'application/json',
                     },
                 }),
             );

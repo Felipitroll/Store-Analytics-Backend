@@ -18,6 +18,15 @@ export class DailyMetric {
     @Column('int', { default: 0 })
     visits: number;
 
+    @Column('int', { default: 0 })
+    sessions: number;
+
+    @Column('decimal', { precision: 10, scale: 4, default: 0 })
+    conversionRate: number;
+
+    @Column('decimal', { precision: 10, scale: 2, default: 0 })
+    averageOrderValue: number;
+
     @ManyToOne(() => Store, (store) => store.dailyMetrics)
     store: Store;
 }
