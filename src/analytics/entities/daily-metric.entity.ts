@@ -27,6 +27,6 @@ export class DailyMetric {
     @Column('decimal', { precision: 10, scale: 2, default: 0 })
     averageOrderValue: number;
 
-    @ManyToOne(() => Store, (store) => store.dailyMetrics)
+    @ManyToOne(() => Store, (store) => store.dailyMetrics, { onDelete: 'CASCADE' })
     store: Store;
 }

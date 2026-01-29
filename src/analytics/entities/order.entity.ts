@@ -22,7 +22,7 @@ export class Order {
     @Column()
     processedAt: Date;
 
-    @ManyToOne(() => Store, (store) => store.orders)
+    @ManyToOne(() => Store, (store) => store.orders, { onDelete: 'CASCADE' })
     store: Store;
 
     @OneToMany(() => LineItem, (lineItem) => lineItem.order, { cascade: true })

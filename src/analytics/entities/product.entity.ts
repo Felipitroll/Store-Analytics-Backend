@@ -27,6 +27,6 @@ export class Product {
     @Column('decimal', { precision: 10, scale: 2, default: 0 })
     totalSales: number;
 
-    @ManyToOne(() => Store, (store) => store.products)
+    @ManyToOne(() => Store, (store) => store.products, { onDelete: 'CASCADE' })
     store: Store;
 }
