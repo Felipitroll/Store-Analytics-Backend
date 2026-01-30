@@ -60,8 +60,44 @@ export class StoreService {
         return savedStore;
     }
 
-    async findAll() {
-        return this.storeRepository.find();
+    async findAll(filters?: { name?: string; url?: string; tags?: string; status?: string; startDate?: string; endDate?: string }) {
+        this.logger.log(`Fetching stores with filters: ${JSON.stringify(filters || {})}`);
+
+        // If no filters are provided, return all stores
+        if (!filters || Object.values(filters).every(v => v === undefined || v === '')) {
+            return this.storeRepository.find();
+        }
+
+        const query = this.storeRepository.createQueryBuilder('store');
+
+        if (filters.name) {
+            query.andWhere('store.name ILIKE :name', { name: `%${filters.name}%` });
+        }
+
+        if (filters.url) {
+            query.andWhere('store.url ILIKE :url', { url: `%${filters.url}%` });
+        }
+
+        if (filters.status) {
+            query.andWhere('store.syncStatus = :status', { status: filters.status });
+        }
+
+        if (filters.tags) {
+            // Using a more robust array contains check for Postgres
+            query.andWhere(':tag = ANY(store.tags)', { tag: filters.tags });
+        }
+
+        if (filters.startDate) {
+            query.andWhere('store.startDate >= :startDate', { startDate: new Date(filters.startDate) });
+        }
+
+        if (filters.endDate) {
+            query.andWhere('store.endDate <= :endDate', { endDate: new Date(filters.endDate) });
+        }
+
+        const results = await query.getMany();
+        this.logger.log(`Found ${results.length} stores matching filters`);
+        return results;
     }
 
     async findOne(id: string) {
